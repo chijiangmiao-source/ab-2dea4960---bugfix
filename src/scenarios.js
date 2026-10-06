@@ -84,6 +84,46 @@ const scenarios = {
         }
       ]
     }
+  },
+
+  // 场景四：解码释放 -> 校正中继（只等待并再次递增时间线）-> 编码获取读取
+  // 应通过，且移交证据呈现 D1->C1->E1 顺序连续的完整同步路径
+  relayTransfer: {
+    title: '三队列中继移交（应通过，呈现完整同步路径）',
+    input: {
+      queues: ['decode-q', 'correct-q', 'encode-q'],
+      buffers: [{ name: 'frameA', length: 16 }, { name: 'meta', length: 4 }],
+      submissions: [
+        {
+          id: 'D1',
+          queue: 'decode-q',
+          signal: { semaphore: 'timeline/decode' },
+          operations: [
+            { type: 'write', buffer: 'frameA', offset: 0, length: 8 },
+            { type: 'release', buffer: 'frameA', offset: 0, length: 8 }
+          ]
+        },
+        {
+          id: 'C1',
+          queue: 'correct-q',
+          wait: { semaphore: 'timeline/decode', value: 1 },
+          signal: { semaphore: 'timeline/correct' },
+          operations: [
+            // 中继提交：只等待首个时间线并再次递增第二个时间线，不触碰帧区间
+            { type: 'write', buffer: 'meta', offset: 0, length: 1 }
+          ]
+        },
+        {
+          id: 'E1',
+          queue: 'encode-q',
+          wait: { semaphore: 'timeline/correct', value: 1 },
+          operations: [
+            { type: 'acquire', buffer: 'frameA', offset: 0, length: 8 },
+            { type: 'read', buffer: 'frameA', offset: 0, length: 8 }
+          ]
+        }
+      ]
+    }
   }
 };
 

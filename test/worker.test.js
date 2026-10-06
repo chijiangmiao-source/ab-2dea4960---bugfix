@@ -43,4 +43,15 @@ test('Worker 入口在 Worker 全局中完成偏序复核并回传结果', () =>
   // 结果来自独立 VM realm，用 JSON 做结构化比较
   assert.deepEqual(JSON.parse(JSON.stringify(messages[1].executableOrder.map((x) => x.id))), ['D1', 'E1']);
   assert.equal(messages[1].affectedRanges.E1.reads[0].evidence.acquireBy, 'E1');
+
+  // 三队列中继：Worker 回传的结果同样携带完整同步路径
+  sandbox.self.onmessage({ data: { input: scenarios.relayTransfer.input } });
+  assert.equal(messages.length, 3);
+  assert.equal(messages[2].ok, true);
+  const via = JSON.parse(JSON.stringify(messages[2].affectedRanges.E1.reads[0].evidence.via));
+  assert.equal(via.kind, 'sync-path');
+  assert.deepEqual(via.path, [
+    { from: 'D1', to: 'C1', kind: 'semaphore', semaphore: 'timeline/decode', value: 1 },
+    { from: 'C1', to: 'E1', kind: 'semaphore', semaphore: 'timeline/correct', value: 1 }
+  ]);
 });

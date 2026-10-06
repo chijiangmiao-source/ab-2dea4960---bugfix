@@ -29,33 +29,31 @@ function cellsOf(op) {
   return out;
 }
 
-// 合并相邻且具有相同版本/证据的单元段
+// 合并相邻且具有相同版本/证据的单元段（先按 缓冲区/操作/版本/证据 分组，
+// 避免不同证据的段按起始偏移交错后无法并段，输出按缓冲区与偏移稳定排序）
 function mergeSegments(segments) {
-  const byBuffer = new Map();
+  const groups = new Map();
   for (const seg of segments) {
-    if (!byBuffer.has(seg.buffer)) byBuffer.set(seg.buffer, []);
-    byBuffer.get(seg.buffer).push(seg);
+    const key = `${seg.buffer}|${seg.access}|${seg.version}|${JSON.stringify(seg.evidence || null)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(seg);
   }
   const merged = [];
-  for (const [buffer, segs] of byBuffer) {
+  for (const segs of groups.values()) {
     segs.sort((a, b) => a.start - b.start);
     let cur = null;
     for (const seg of segs) {
-      const sameEvidence =
-        cur &&
-        cur.access === seg.access &&
-        cur.version === seg.version &&
-        JSON.stringify(cur.evidence || null) === JSON.stringify(seg.evidence || null);
-      if (cur && seg.start <= cur.end && sameEvidence) {
+      if (cur && seg.start <= cur.end) {
         cur.end = Math.max(cur.end, seg.end);
       } else {
         if (cur) merged.push(cur);
-        cur = { buffer, start: seg.start, end: seg.end, access: seg.access, version: seg.version };
+        cur = { buffer: seg.buffer, start: seg.start, end: seg.end, access: seg.access, version: seg.version };
         if (seg.evidence) cur.evidence = seg.evidence;
       }
     }
     if (cur) merged.push(cur);
   }
+  merged.sort((a, b) => a.buffer.localeCompare(b.buffer) || a.start - b.start);
   return merged;
 }
 
@@ -181,29 +179,42 @@ function analyze(input) {
   for (let i = 0; i < n; i += 1) dfsReach(i);
   const hb = (a, b) => a === b || reach[a].has(b);
 
-  const summarizeSyncPath = (from, to) => {
-    const visited = new Set();
-    let terminal = null;
-    const visit = (current) => {
-      visited.add(current);
-      const candidates = edges[current]
-        .filter((next) => !visited.has(next) && (next === to || reach[next].has(to)))
-        .sort((a, b) => a - b);
-      for (const next of candidates) {
-        const reason = edgeReasons.get(`${current}->${next}`);
-        if (reason && reason.kind === 'semaphore') {
-          terminal = {
-            from: subs[current].id,
-            to: subs[next].id,
-            semaphore: reason.semaphore,
-            value: reason.signalValue
-          };
+  // 完整同步路径：from -> to 的一条边序列（BFS 最短，候选按下标升序，结果稳定可复算）。
+  // 每一跳记录参与提交与队列顺序/信号量边及对应值，使经中继提交的移交能被连续证明。
+  const findSyncPath = (from, to) => {
+    if (from === to) return null;
+    const prev = new Array(n).fill(-1);
+    const seen = new Set([from]);
+    const queue = [from];
+    while (queue.length) {
+      const u = queue.shift();
+      const nexts = edges[u].slice().sort((a, b) => a - b);
+      for (const v of nexts) {
+        if (seen.has(v)) continue;
+        seen.add(v);
+        prev[v] = u;
+        if (v === to) {
+          const hops = [];
+          let cur = to;
+          while (cur !== from) {
+            const p = prev[cur];
+            const reason = edgeReasons.get(`${p}->${cur}`);
+            const hop = { from: subs[p].id, to: subs[cur].id, kind: reason.kind };
+            if (reason.kind === 'semaphore') {
+              hop.semaphore = reason.semaphore;
+              hop.value = reason.signalValue;
+            } else if (reason.kind === 'queue-order') {
+              hop.queue = reason.queue;
+            }
+            hops.unshift(hop);
+            cur = p;
+          }
+          return hops;
         }
-        if (next !== to) visit(next);
+        queue.push(v);
       }
-    };
-    visit(from);
-    return terminal;
+    }
+    return null;
   };
 
   const indegree = new Array(n).fill(0);
@@ -297,12 +308,14 @@ function analyze(input) {
               executedPrefix: executed.map((x) => x.id)
             });
           }
+          // 直接移交（释放与获取之间仅一条边）保持简洁证据；
+          // 经中继提交的间接移交呈现顺序连续、可复算的完整同步路径
           const directVia = edgeReasons.get(`${cell.pending.releaseIndex}->${si}`);
-          const terminal = !directVia && hb(cell.pending.releaseIndex, si)
-            ? summarizeSyncPath(cell.pending.releaseIndex, si)
-            : null;
-          const via = directVia || (terminal ? { kind: 'semaphore-path', terminal } :
-            (hb(cell.pending.releaseIndex, si) ? { kind: 'transitive' } : null));
+          let via = directVia || null;
+          if (!via && hb(cell.pending.releaseIndex, si)) {
+            const path = findSyncPath(cell.pending.releaseIndex, si);
+            if (path && path.length) via = { kind: 'sync-path', path };
+          }
           const evidence = {
             fromQueue: cell.pending.fromQueue,
             toQueue: s.queue,

@@ -52,6 +52,67 @@ test('同队列顺序读：后者可见前者的写，无需移交', () => {
   assert.equal(r.affectedRanges.B.reads[0].version, 1);
 });
 
+test('三队列中继移交：通过且呈现顺序连续、可复算的完整同步路径', () => {
+  const r = analyze(scenarios.relayTransfer.input);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  // 稳定可执行次序：录入顺序决定的拓扑序
+  assert.deepEqual(r.executableOrder.map((x) => x.id), ['D1', 'C1', 'E1']);
+
+  const read = r.affectedRanges.E1.reads[0];
+  assert.equal(read.buffer, 'frameA');
+  assert.deepEqual([read.start, read.end], [0, 8]);
+  assert.equal(read.version, 1, '读取的仍是解码写入的 v1');
+  assert.ok(read.evidence, '中继移交的读必须携带移交证据');
+  assert.equal(read.evidence.fromQueue, 'decode-q');
+  assert.equal(read.evidence.toQueue, 'encode-q');
+  assert.equal(read.evidence.releaseBy, 'D1');
+  assert.equal(read.evidence.acquireBy, 'E1');
+
+  // 完整同步路径：D1 -timeline/decode=1-> C1 -timeline/correct=1-> E1
+  const via = read.evidence.via;
+  assert.equal(via.kind, 'sync-path');
+  assert.deepEqual(via.path, [
+    { from: 'D1', to: 'C1', kind: 'semaphore', semaphore: 'timeline/decode', value: 1 },
+    { from: 'C1', to: 'E1', kind: 'semaphore', semaphore: 'timeline/correct', value: 1 }
+  ]);
+
+  // 获取段与读取段证据一致；移交汇总记录同一条完整链
+  assert.deepEqual(r.affectedRanges.E1.acquires[0].evidence.via, via);
+  assert.equal(r.transfers.length, 1);
+  assert.deepEqual([r.transfers[0].start, r.transfers[0].end], [0, 8]);
+  assert.deepEqual(r.transfers[0].evidence.via.path, via.path);
+});
+
+test('直接移交保持简洁证据：单条信号量边，不展开路径', () => {
+  const r = analyze(scenarios.completeTransfer.input);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const via = r.affectedRanges.E1.reads[0].evidence.via;
+  assert.equal(via.kind, 'semaphore');
+  assert.equal(via.semaphore, 'timeline/decode');
+  assert.equal(via.path, undefined, '直接移交不应携带多跳路径');
+});
+
+test('同队列多跳中继：同步路径呈现队列顺序边及参与提交', () => {
+  const r = analyze(base([
+    {
+      id: 'A', queue: 'Q0',
+      operations: [{ type: 'write', buffer: 'f', offset: 0, length: 2 }, { type: 'release', buffer: 'f', offset: 0, length: 2 }]
+    },
+    { id: 'B', queue: 'Q0', operations: [{ type: 'write', buffer: 'f', offset: 4, length: 1 }] },
+    {
+      id: 'C', queue: 'Q0',
+      operations: [{ type: 'acquire', buffer: 'f', offset: 0, length: 2 }, { type: 'read', buffer: 'f', offset: 0, length: 2 }]
+    }
+  ]));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const via = r.affectedRanges.C.reads[0].evidence.via;
+  assert.equal(via.kind, 'sync-path');
+  assert.deepEqual(via.path, [
+    { from: 'A', to: 'B', kind: 'queue-order', queue: 'Q0' },
+    { from: 'B', to: 'C', kind: 'queue-order', queue: 'Q0' }
+  ]);
+});
+
 test('等待无满足来源 -> UNSATISFIED_WAIT', () => {
   const r = analyze(base([
     { id: 'A', queue: 'Q1', wait: { semaphore: 't', value: 2 }, operations: [{ type: 'read', buffer: 'f', offset: 0, length: 1 }] }
@@ -129,6 +190,12 @@ test('信号量传递先后（Q0→Q1→Q2）支撑跨队列完整移交链', ()
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.deepEqual(r.executableOrder.map((x) => x.id), ['A', 'B', 'C']);
   assert.equal(r.affectedRanges.C.reads[0].version, 1);
+  // 每段移交都是直接信号量边，证据保持简洁
+  assert.equal(r.affectedRanges.B.acquires[0].evidence.via.kind, 'semaphore');
+  assert.equal(r.affectedRanges.B.acquires[0].evidence.via.semaphore, 'a');
+  assert.equal(r.affectedRanges.C.acquires[0].evidence.via.kind, 'semaphore');
+  assert.equal(r.affectedRanges.C.acquires[0].evidence.via.semaphore, 'b');
+  assert.equal(r.transfers.length, 2);
 });
 
 test('等待的信号量与释放提交无先后关系 -> ORDERING_MISSING（首个无序读写）', () => {

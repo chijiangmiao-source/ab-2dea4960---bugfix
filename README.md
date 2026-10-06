@@ -25,6 +25,11 @@
    - `STALE_VERSION`：读取/获取过期版本。
 3. 跨队列读只有在 **释放 + 信号量先后关系 + 获取** 三类证据完整匹配时才可见。
 4. 通过时返回：可执行次序（拓扑序）、每个提交受影响区间（读/写/释放/获取，含版本与移交证据）、完整移交记录。
+5. 移交证据 `via`：
+   - **直接移交**（释放与获取之间仅一条边）保持简洁证据，如 `{ kind: 'semaphore', semaphore, signalValue }` 或 `{ kind: 'queue-order', queue }`；
+   - **中继移交**（释放方与获取方之间经过只等待并再次递增时间线的中继提交）呈现 `kind: 'sync-path'`，
+     `path` 为顺序连续、可复算的完整同步路径，每一跳含参与提交与队列顺序/信号量边及对应值，例如
+     `D1 —timeline/decode=1→ C1 —timeline/correct=1→ E1`。
 
 复核在浏览器 **Web Worker**（`src/verifier/worker.js`）中执行，HTTP `POST /api/verify` 提供同构实现用于冒烟。
 
@@ -50,11 +55,13 @@ docker compose run --rm verify       # 一次性验收服务，以退出码报�
 
 `verify` 服务依次执行：
 
-1. 规则代码测试（`node --test`，含 Worker 协议、两类读取场景、死锁环、错误属主、过期版本等）；
+1. 规则代码测试（`node --test`，含 Worker 协议、两类读取场景、三队列中继、死锁环、错误属主、过期版本等）；
 2. 操作页构建检查（结构与内联脚本可编译、Worker 接线）；
 3. API/HTTP 冒烟：
    - “缺少获取的跨队列读取” → HTTP 422 / `MISSING_ACQUIRE`，定位提交与单元范围；
-   - “完整移交后读取” → HTTP 200，呈现可执行次序、版本 v1 与移交证据（releaseBy/acquireBy/via=semaphore）。
+   - “完整移交后读取” → HTTP 200，呈现可执行次序、版本 v1 与移交证据（releaseBy/acquireBy/via=semaphore）；
+   - “三队列中继移交” → HTTP 200，读取版本 v1，移交证据为 `D1 —timeline/decode=1→ C1 —timeline/correct=1→ E1` 的完整同步路径，可执行次序稳定为 D1 → C1 → E1；
+   - “死锁环” → HTTP 422 / `DEADLOCK_CYCLE`（回归）。
 
 退出码 `0` 表示验收通过，非 `0` 表示失败。
 
@@ -65,7 +72,7 @@ src/verifier/limits.js    录入上限
 src/verifier/validator.js 结构校验
 src/verifier/engine.js    偏序 DAG + 逐单元状态机（Node / Worker UMD）
 src/verifier/worker.js    Web Worker 入口
-src/scenarios.js          标准场景（缺少获取 / 完整移交 / 死锁）
+src/scenarios.js          标准场景（缺少获取 / 完整移交 / 死锁 / 三队列中继）
 src/public/index.html     操作页
 src/server.js             HTTP 服务
 test/                     node:test 规则测试

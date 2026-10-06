@@ -14,7 +14,7 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'space-image-queue-reviewer', time: new Date().toISOString() });
 });
 
-// 两个标准读取场景，供操作页一键载入与冒烟使用
+// 标准场景（缺少获取 / 完整移交 / 死锁 / 三队列中继），供操作页一键载入与冒烟使用
 app.get('/api/scenarios', (_req, res) => {
   res.json(Object.fromEntries(Object.entries(scenarios).map(([k, v]) => [k, v.input])));
 });

@@ -60,6 +60,7 @@
       <div class="row">
         <button class="ghost" data-scn="missingAcquire">缺少获取的跨队列读取（应拒绝）</button>
         <button class="ghost" data-scn="completeTransfer">完整移交后读取（应通过）</button>
+        <button class="ghost" data-scn="relayTransfer">三队列中继移交（完整同步路径）</button>
         <button class="ghost" data-scn="deadlock">死锁环（应拒绝）</button>
       </div>
     </div>
@@ -256,9 +257,15 @@ function loadScenario(data) {
 const rangeText = (r) => `${r.buffer}[${r.start}..${r.end - 1}]`;
 function syncSummary(evidence) {
   const via = evidence && evidence.via;
-  if (!via || via.kind !== 'semaphore-path' || !via.terminal) return null;
-  const edge = via.terminal;
-  return `同步依据：${edge.from} 经 ${edge.semaphore}=${edge.value} 先于 ${edge.to}`;
+  if (!via) return null;
+  // 中继移交：把每一跳（参与提交 + 信号量值/队列顺序）连成顺序连续的完整同步路径
+  if (via.kind === 'sync-path' && Array.isArray(via.path) && via.path.length) {
+    const hops = via.path.map((h) => (h.kind === 'semaphore'
+      ? `${h.from} —${h.semaphore}=${h.value}→ ${h.to}`
+      : `${h.from} —队列 ${h.queue}→ ${h.to}`));
+    return `完整同步路径：${hops.join(' ⇒ ')}`;
+  }
+  return null;
 }
 function renderResult(box, r) {
   box.innerHTML = '';

@@ -60,6 +60,7 @@
       <div class="row">
         <button class="ghost" data-scn="missingAcquire">缺少获取的跨队列读取（应拒绝）</button>
         <button class="ghost" data-scn="completeTransfer">完整移交后读取（应通过）</button>
+        <button class="ghost" data-scn="relayTransfer">三队列中继移交（应通过，完整同步链）</button>
         <button class="ghost" data-scn="deadlock">死锁环（应拒绝）</button>
       </div>
     </div>
@@ -254,11 +255,20 @@ function loadScenario(data) {
 }
 
 const rangeText = (r) => `${r.buffer}[${r.start}..${r.end - 1}]`;
+// 将可复算的同步证据渲染为顺序连续的文本：直连简洁呈现，多跳链逐跳列出
+function hopText(hop) {
+  if (hop.kind === 'semaphore') return `${hop.from} —[${hop.semaphore}=${hop.value}]→ ${hop.to}`;
+  return `${hop.from} —[队列顺序:${hop.queue}]→ ${hop.to}`;
+}
 function syncSummary(evidence) {
   const via = evidence && evidence.via;
-  if (!via || via.kind !== 'semaphore-path' || !via.terminal) return null;
-  const edge = via.terminal;
-  return `同步依据：${edge.from} 经 ${edge.semaphore}=${edge.value} 先于 ${edge.to}`;
+  if (!via) return null;
+  if (via.kind === 'sync-path') {
+    return `同步链（${via.submissions.join(' → ')}）：` + via.hops.map(hopText).join('　');
+  }
+  if (via.kind === 'semaphore') return `同步依据：${hopText(via)}`;
+  if (via.kind === 'queue-order') return `同步依据：${hopText(via)}`;
+  return null;
 }
 function renderResult(box, r) {
   box.innerHTML = '';

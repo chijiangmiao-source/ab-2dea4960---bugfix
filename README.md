@@ -11,6 +11,7 @@
 - 至多 **16** 个缓冲区，每个长度不超过 **64** 个单元
 - 至多 **48** 个提交
 - 每个提交可 `wait`（等待时间线值）/ `signal`（完成后递增时间线），操作按顺序包含区间 `read` / `write` / `release` / `acquire`
+- `operations` 允许为空数组：**中继提交**只负责等待一个时间线并再次递增另一个时间线，本身不触碰缓冲区区间
 
 ## 复核规则
 
@@ -25,6 +26,12 @@
    - `STALE_VERSION`：读取/获取过期版本。
 3. 跨队列读只有在 **释放 + 信号量先后关系 + 获取** 三类证据完整匹配时才可见。
 4. 通过时返回：可执行次序（拓扑序）、每个提交受影响区间（读/写/释放/获取，含版本与移交证据）、完整移交记录。
+5. 移交证据 `via`：
+   - 直连移交保持简洁（单跳 `{kind:'semaphore'|'queue-order', from, to, …}`）；
+   - 释放方与获取方之间经过只负责等待并再次递增时间线的**中继提交**时，返回顺序连续、可复算的完整同步链
+     `{kind:'sync-path', submissions:[释放提交, …中继提交, 获取提交], hops:[逐跳边…]}`，
+     每跳标明 `queue-order`（含队列名）或 `semaphore`（含信号量名与值），连续证明最初释放先于最终获取。
+6. 三队列中继场景：解码队列写入并释放帧区间、校正队列等待首个信号量后递增第二个信号量（中继提交）、编码队列等待第二个信号量后获取并读取原帧区间；通过时读取版本仍为原版本（如 v1），证据为 `D1 → R1 → E1` 的完整同步链。
 
 复核在浏览器 **Web Worker**（`src/verifier/worker.js`）中执行，HTTP `POST /api/verify` 提供同构实现用于冒烟。
 
@@ -50,11 +57,13 @@ docker compose run --rm verify       # 一次性验收服务，以退出码报�
 
 `verify` 服务依次执行：
 
-1. 规则代码测试（`node --test`，含 Worker 协议、两类读取场景、死锁环、错误属主、过期版本等）；
-2. 操作页构建检查（结构与内联脚本可编译、Worker 接线）；
+1. 规则代码测试（`node --test`，含 Worker 协议、直接读取、**三队列中继完整同步链**、死锁环、错误属主、过期版本等）；
+2. 操作页构建检查（结构与内联脚本可编译、Worker 接线、同步链渲染）；
 3. API/HTTP 冒烟：
    - “缺少获取的跨队列读取” → HTTP 422 / `MISSING_ACQUIRE`，定位提交与单元范围；
-   - “完整移交后读取” → HTTP 200，呈现可执行次序、版本 v1 与移交证据（releaseBy/acquireBy/via=semaphore）。
+   - “完整移交后读取” → HTTP 200，呈现可执行次序、版本 v1 与移交证据（releaseBy/acquireBy/via=semaphore）；
+   - “三队列中继移交” → HTTP 200，读取版本 v1，证据为含参与提交与逐跳信号量值的完整同步链（D1→R1→E1），重复复核顺序稳定；
+   - “死锁环” → HTTP 422 / `DEADLOCK_CYCLE`。
 
 退出码 `0` 表示验收通过，非 `0` 表示失败。
 
@@ -65,7 +74,7 @@ src/verifier/limits.js    录入上限
 src/verifier/validator.js 结构校验
 src/verifier/engine.js    偏序 DAG + 逐单元状态机（Node / Worker UMD）
 src/verifier/worker.js    Web Worker 入口
-src/scenarios.js          标准场景（缺少获取 / 完整移交 / 死锁）
+src/scenarios.js          标准场景（缺少获取 / 完整移交 / 三队列中继 / 死锁）
 src/public/index.html     操作页
 src/server.js             HTTP 服务
 test/                     node:test 规则测试

@@ -92,8 +92,9 @@ function validateInput(input) {
     }
 
     const ops = s.operations;
-    if (!Array.isArray(ops) || ops.length === 0) {
-      fail(`${where}.operations 必须是非空数组`);
+    // operations 允许为空数组：中继提交只负责等待并再次递增时间线信号量，不触碰区间
+    if (!Array.isArray(ops)) {
+      fail(`${where}.operations 必须是数组（中继提交可为空数组）`);
       return;
     }
     ops.forEach((op, j) => {

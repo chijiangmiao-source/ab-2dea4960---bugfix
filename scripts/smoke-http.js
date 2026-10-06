@@ -51,8 +51,9 @@ async function runChecks(base) {
 
   console.log('[3] 场景接口 GET /api/scenarios');
   const scn = await request(base, 'GET', '/api/scenarios');
-  check(scn.status === 200 && scn.json && scn.json.missingAcquire && scn.json.completeTransfer,
-    '返回 missingAcquire 与 completeTransfer 两个场景');
+  check(scn.status === 200 && scn.json && scn.json.missingAcquire && scn.json.completeTransfer
+    && scn.json.relayTransfer && scn.json.deadlock,
+    '返回 missingAcquire / completeTransfer / relayTransfer / deadlock 四个场景');
 
   console.log('[3b] Worker 引擎静态资源 GET /verifier/worker.js');
   const wjs = await request(base, 'GET', '/verifier/worker.js');
@@ -82,6 +83,44 @@ async function runChecks(base) {
     && read.evidence.via && read.evidence.via.kind === 'semaphore',
     '呈现完整移交证据（releaseBy=D1, acquireBy=E1, via=semaphore）');
   check(!!(good.json && good.json.transfers.length === 1), '移交记录 1 段 frameA[0..7]');
+
+  console.log('[6] “三队列中继移交”必须通过并呈现完整同步链');
+  const relay = await request(base, 'POST', '/api/verify', scenarios.relayTransfer.input);
+  check(relay.status === 200, `HTTP 200（实际 ${relay.status}）`);
+  check(relay.json && relay.json.ok === true, 'ok=true');
+  const relayOrder = relay.json && relay.json.executableOrder.map((x) => x.id).join(',');
+  check(relayOrder === 'D1,R1,E1', `可执行次序 D1 → R1 → E1（实际 ${relayOrder}）`);
+  const relayRead = relay.json && relay.json.affectedRanges.E1.reads[0];
+  check(!!relayRead && relayRead.start === 0 && relayRead.end === 8, '读取区间 frameA[0..7]');
+  check(!!relayRead && relayRead.version === 1, '最终读取版本 v1（原帧未被中继改动）');
+  const relayVia = relayRead && relayRead.evidence && relayRead.evidence.via;
+  check(!!relayVia && relayVia.kind === 'sync-path'
+    && Array.isArray(relayVia.submissions) && relayVia.submissions.join(',') === 'D1,R1,E1'
+    && relayVia.hops.length === 2,
+    '证据为 sync-path，参与提交 D1,R1,E1，共 2 跳');
+  check(!!relayVia && relayVia.hops[0] && relayVia.hops[0].kind === 'semaphore'
+    && relayVia.hops[0].from === 'D1' && relayVia.hops[0].to === 'R1'
+    && relayVia.hops[0].semaphore === 'timeline/decode' && relayVia.hops[0].value === 1,
+    '第 1 跳：D1 经 timeline/decode=1 先于 R1');
+  check(!!relayVia && relayVia.hops[1] && relayVia.hops[1].kind === 'semaphore'
+    && relayVia.hops[1].from === 'R1' && relayVia.hops[1].to === 'E1'
+    && relayVia.hops[1].semaphore === 'timeline/correct' && relayVia.hops[1].value === 1,
+    '第 2 跳：R1 经 timeline/correct=1 先于 E1');
+  check(!!(relay.json && relay.json.transfers.length === 1
+    && relay.json.transfers[0].evidence.via.hops.length === 2),
+    '完整移交记录 1 段且含 2 跳同步链');
+  // 再发一次确认顺序与路径复算稳定
+  const relayAgain = await request(base, 'POST', '/api/verify', scenarios.relayTransfer.input);
+  const stable = relayAgain.json && relayAgain.status === 200
+    && JSON.stringify(relayAgain.json.executableOrder) === JSON.stringify(relay.json.executableOrder)
+    && JSON.stringify(relayAgain.json.affectedRanges.E1.reads) === JSON.stringify(relay.json.affectedRanges.E1.reads);
+  check(!!stable, '重复复核顺序与同步链稳定一致');
+
+  console.log('[7] “死锁环”必须被拒绝');
+  const dl = await request(base, 'POST', '/api/verify', scenarios.deadlock.input);
+  check(dl.status === 422, `HTTP 422（实际 ${dl.status}）`);
+  check(dl.json && dl.json.ok === false && dl.json.code === 'DEADLOCK_CYCLE',
+    `code=DEADLOCK_CYCLE（实际 ${dl.json && dl.json.code}）`);
 
   return failures;
 }

@@ -181,29 +181,60 @@ function analyze(input) {
   for (let i = 0; i < n; i += 1) dfsReach(i);
   const hb = (a, b) => a === b || reach[a].has(b);
 
-  const summarizeSyncPath = (from, to) => {
-    const visited = new Set();
-    let terminal = null;
-    const visit = (current) => {
-      visited.add(current);
-      const candidates = edges[current]
-        .filter((next) => !visited.has(next) && (next === to || reach[next].has(to)))
-        .sort((a, b) => a - b);
-      for (const next of candidates) {
-        const reason = edgeReasons.get(`${current}->${next}`);
-        if (reason && reason.kind === 'semaphore') {
-          terminal = {
-            from: subs[current].id,
-            to: subs[next].id,
-            semaphore: reason.semaphore,
-            value: reason.signalValue
-          };
-        }
-        if (next !== to) visit(next);
+  // 构造一条 from -> to 的顺序连续、可复算的完整同步路径：
+  // 逐跳列出参与提交与边（队列顺序边 / 时间线信号量边及对应值），
+  // 使最初的释放提交先于最终的获取提交可被连续证明。
+  // 边的可达性已由 reach 保证；此处用 BFS 选取跳数最少且录入下标最稳定的一条。
+  const describeEdge = (a, b) => {
+    const reason = edgeReasons.get(`${a}->${b}`);
+    if (reason && reason.kind === 'semaphore') {
+      return {
+        kind: 'semaphore',
+        from: subs[a].id,
+        to: subs[b].id,
+        semaphore: reason.semaphore,
+        value: reason.signalValue
+      };
+    }
+    return { kind: 'queue-order', from: subs[a].id, to: subs[b].id, queue: subs[a].queue };
+  };
+
+  const buildSyncPath = (from, to) => {
+    if (from === to) return { hops: [], submissions: [subs[from].id] };
+    const prev = new Array(n).fill(-1);
+    const seen = new Set([from]);
+    const queue = [from];
+    let found = false;
+    while (queue.length) {
+      const u = queue.shift();
+      const nexts = edges[u].filter((v) => v === to || reach[v].has(to)).sort((a, b) => a - b);
+      for (const v of nexts) {
+        if (seen.has(v)) continue;
+        seen.add(v);
+        prev[v] = u;
+        if (v === to) { found = true; queue.length = 0; break; }
+        queue.push(v);
       }
-    };
-    visit(from);
-    return terminal;
+    }
+    if (!found) return null;
+    const rev = [];
+    for (let cur = to; cur !== -1; cur = prev[cur]) rev.push(cur);
+    const nodes = rev.reverse();
+    const hops = [];
+    for (let k = 0; k + 1 < nodes.length; k += 1) hops.push(describeEdge(nodes[k], nodes[k + 1]));
+    return { hops, submissions: nodes.map((i) => subs[i].id) };
+  };
+
+  // 移交同步证据：直连（单跳）保持简洁；经中继提交的多跳路径展开为完整同步链
+  const transferVia = (releaseIndex, acquireIndex) => {
+    if (releaseIndex === acquireIndex) {
+      return { kind: 'same-submission', submission: subs[releaseIndex].id };
+    }
+    const directReason = edgeReasons.get(`${releaseIndex}->${acquireIndex}`);
+    if (directReason) return describeEdge(releaseIndex, acquireIndex);
+    const path = buildSyncPath(releaseIndex, acquireIndex);
+    if (!path) return null;
+    return { kind: 'sync-path', hops: path.hops, submissions: path.submissions };
   };
 
   const indegree = new Array(n).fill(0);
@@ -297,12 +328,7 @@ function analyze(input) {
               executedPrefix: executed.map((x) => x.id)
             });
           }
-          const directVia = edgeReasons.get(`${cell.pending.releaseIndex}->${si}`);
-          const terminal = !directVia && hb(cell.pending.releaseIndex, si)
-            ? summarizeSyncPath(cell.pending.releaseIndex, si)
-            : null;
-          const via = directVia || (terminal ? { kind: 'semaphore-path', terminal } :
-            (hb(cell.pending.releaseIndex, si) ? { kind: 'transitive' } : null));
+          const via = transferVia(cell.pending.releaseIndex, si);
           const evidence = {
             fromQueue: cell.pending.fromQueue,
             toQueue: s.queue,

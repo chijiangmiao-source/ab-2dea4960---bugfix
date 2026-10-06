@@ -22,6 +22,8 @@ function run() {
   check(/\/api\/scenarios/.test(html), '未接入 /api/scenarios');
   check(/缺少获取的跨队列读取/.test(html), '缺少标准场景一入口');
   check(/完整移交后读取/.test(html), '缺少标准场景二入口');
+  check(/三队列中继移交/.test(html), '缺少标准场景三（三队列中继）入口');
+  check(/data-scn="relayTransfer"/.test(html), '中继场景未绑定 relayTransfer');
   check(/MAX_BUFFER_LEN:\s*64/.test(html), '未体现 64 单元上限');
   check(/MAX_SUBMISSIONS:\s*48/.test(html), '未体现 48 提交上限');
   check(/MAX_QUEUES:\s*3/.test(html), '未体现 3 队列上限');
@@ -45,6 +47,11 @@ function run() {
   check(/new\s+Worker\(['"]\/verifier\/worker\.js['"]\)/.test(html), '未创建 /verifier/worker.js Worker');
   check(/w\.postMessage\(\{\s*input\s*\}\)/.test(html), 'Worker 未接收 input 消息');
   check(/verifyViaApi/.test(html), '缺少 HTTP API 回退路径');
+
+  // 完整同步链（多跳中继）必须在页面中逐跳可呈现
+  check(/function\s+hopText\s*\(/.test(html), '缺少逐跳同步边渲染 hopText');
+  check(/via\.kind\s*===\s*['"]sync-path['"]/.test(html), '未渲染 sync-path 完整同步链');
+  check(/同步链/.test(html), '缺少“同步链”呈现文案');
 
   if (failures.length) {
     console.error('✗ 页面构建检查失败:');

@@ -61,7 +61,45 @@ const scenarios = {
     }
   },
 
-  // 场景三：同队列互相等待对方的时间线 —— 死锁环
+  // 场景三：三队列中继 —— 校正队列只等待首个时间线并递增第二个时间线，
+  // 区间由解码队列释放、编码队列获取读取；通过证据必须是 D1→R1→E1 的完整同步链
+  relayTransfer: {
+    title: '三队列中继移交（应通过，证据为完整同步链）',
+    input: {
+      queues: ['decode-q', 'correct-q', 'encode-q'],
+      buffers: [{ name: 'frameA', length: 16 }],
+      submissions: [
+        {
+          id: 'D1',
+          queue: 'decode-q',
+          signal: { semaphore: 'timeline/decode' },
+          operations: [
+            { type: 'write', buffer: 'frameA', offset: 0, length: 8 },
+            { type: 'release', buffer: 'frameA', offset: 0, length: 8 }
+          ]
+        },
+        {
+          // 中继提交：只负责等待并再次递增时间线信号量，不触碰帧区间
+          id: 'R1',
+          queue: 'correct-q',
+          wait: { semaphore: 'timeline/decode', value: 1 },
+          signal: { semaphore: 'timeline/correct' },
+          operations: []
+        },
+        {
+          id: 'E1',
+          queue: 'encode-q',
+          wait: { semaphore: 'timeline/correct', value: 1 },
+          operations: [
+            { type: 'acquire', buffer: 'frameA', offset: 0, length: 8 },
+            { type: 'read', buffer: 'frameA', offset: 0, length: 8 }
+          ]
+        }
+      ]
+    }
+  },
+
+  // 场景四：同队列互相等待对方的时间线 —— 死锁环
   deadlock: {
     title: '信号量等待成环（死锁，应拒绝）',
     input: {
